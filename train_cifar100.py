@@ -52,7 +52,7 @@ def main():
     parser.add_argument('--onecycle', action='store_true', default=False, help='Trains with One Cycle LR scheduler')
     parser.add_argument('--cosine-lr', action='store_true', default=False, help='Trains with cosine LR updating')
 
-    parser.add_argument('--run-netshed, action='store_true', default=False, help='Runs BitShed on the network')
+    parser.add_argument('--run-netshed', action='store_true', default=False, help='Runs BitShed on the network')
 
 
 
