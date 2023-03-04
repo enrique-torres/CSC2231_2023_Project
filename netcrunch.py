@@ -20,53 +20,102 @@ import ssl
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-def bruteforce_crunch(data, target, original_model, criterion, previous_optimal_bitlengths, args):
+# NEW IDEA: Test every layer individually to see what effect does trimming the specific layer have on the training loss
+# Then, based on layer size and effect on loss, decide what to trim more or less
+
+def compute_layer_contribution(data, target, original_model, criterion, args):
+
+	# Set the model to evaluation mode
+	original_model.eval()
+
+	# Split the model into its constituent layers
+	layers = list(original_model.children())
+
+	# Compute the contribution of each layer to the loss
+	layer_contributions = []
+	with torch.no_grad():
+		# Forward pass through the model
+		output = original_model(data)
+
+		# Compute the gradients of the loss with respect to the output of the model
+		loss_grads = torch.autograd.grad(criterion(output, target), output)[0]
+
+		# Compute the contribution of each layer to the loss
+		grads = None
+		for i in range(len(layers) - 1, -1, -1):
+			if grads is None:
+				# The gradient of the loss with respect to the output of the model is given by the loss_grads tensor
+				grads = loss_grads
+			else:
+				# Compute the gradient of the loss with respect to the input to the layer
+				grads = torch.autograd.grad(None, layers[i].weight, grads, retain_graph=True)[0]
+			contributions = layers[i].weight * grads
+			contributions = torch.mean(contributions.view(contributions.size(0), -1), dim=1)
+			layer_contributions.append(contributions)
+
+def calculate_perlayer_parameters(original_model, args):
+
+	# Split the model into its constituent layers
+	layers = list(original_model.children())
+	# Compute the metric for each layer
+	perlayer_parameters = []
+	for i in range(len(layers)):
+		num_params = sum(p.numel() for p in layers[i].parameters())
+		perlayer_parameters.append(num_params)
+
+	return perlayer_parameters
+
+
+# First method to compare against. This method brings down the bitlength for all layers until a maximum
+# relative error is reached between the original model's loss on the batch of data, and the loss of the
+# trimmed model (by default the limit is 10% deviation from original loss)
+def bruteforce_crunch(data, target, original_model, criterion, args):
 	
 	# create initial list of mantissa bitlengths for the trimmed network
-	if previous_optimal_bitlengths is None:
-		optimal_bitlengths = [args.init_bitlength] * len(list(original_model.parameters()))
-	else:
-		optimal_bitlengths = previous_optimal_bitlengths
+	optimal_bitlengths = [args.init_bitlength] * len(list(original_model.parameters()))
 	
-	# compute output of original model
-	output = original_model(data)       
-	loss = criterion(output, target)
+	with torch.no_grad():
+		# compute output of original model
+		output = original_model(data)       
+		loss = criterion(output, target)
 
 	# deepcopy the model to have a modifiable version
 	trimmed_model = copy.deepcopy(original_model)
-
-	# compute output and loss of trimmed model
-	trimmed_output = trimmed_model(data)       
-	trimmed_loss = criterion(output, target)
+	
+	with torch.no_grad():
+		# compute output and loss of trimmed model
+		trimmed_output = trimmed_model(data)       
+		trimmed_loss = criterion(trimmed_output, target)
 
 	relative_error = abs(trimmed_loss.item() - loss.item()) / loss.item()
+	
 	while not (trimmed_loss.item() > loss.item() and relative_error > args.max_loss_deviation):
-		print("Trying the following bitlengths: " + str(optimal_bitlengths))
+		#print("Original loss was: " + str(loss.item()) + ", Trimmed loss is: " + str(trimmed_loss.item()) + ", Relative error is: " + str(relative_error))
+		#print("Trying the following bitlengths: " + str(optimal_bitlengths))
 		# we don't want torch autograd to know about this :)
 		with torch.no_grad():
 			# for every parameter, take its currently defined mantissa bitlength
 			for i, parameter in enumerate(trimmed_model.parameters()):
 				# prepare the mask to trim the least significant N bits of the mantissas
 				mask = 0xFFFFFFFF
-				mask = mask >> optimal_bitlengths[i]
-				mask = mask << optimal_bitlengths[i]
-				print(parameter)
-				print("##################################################################")
+				mask = mask >> (args.init_bitlength - optimal_bitlengths[i])
+				mask = mask << (args.init_bitlength - optimal_bitlengths[i])
+
 				# view the float value as if it was an int, to modify the bits specifically
 				weight_as_int = parameter.data.view(torch.int32) & mask
 
 				# reconvert to its trimmed float version
-				parameter.data = weight_as_int.data.view(torch.float)
-				print(parameter)
-		# push all the bitlengths down
-		for i, bitlength in enumerate(optimal_bitlengths):
-			optimal_bitlengths[i] = max(bitlength - 1, 0)
+				parameter.data = weight_as_int.data.view(torch.float32)
 
-		# compute output and loss of trimmed model
-		trimmed_output = trimmed_model(data)       
-		trimmed_loss = criterion(output, target)
+			# push all the bitlengths down
+			for i, bitlength in enumerate(optimal_bitlengths):
+				optimal_bitlengths[i] = max(bitlength - 1, 0)
 
-	print("Maximum loss deviation reached, going into the per layer process now")
+			# compute output and loss of trimmed model, then compute relative error between the original and the trimmed loss
+			trimmed_output = trimmed_model(data)       
+			trimmed_loss = criterion(trimmed_output, target)
+			relative_error = abs(trimmed_loss.item() - loss.item()) / loss.item()
+
 	# delete the trimmed model from GPU memory, as we are constantly creating new versions of the model
 	del trimmed_model
 
@@ -77,31 +126,9 @@ def bruteforce_crunch(data, target, original_model, criterion, previous_optimal_
 	for i, bitlength in enumerate(optimal_bitlengths):
 		optimal_bitlengths[i] = min(bitlength + 1, args.init_bitlength)
 
-	# now for every parameter we're pushing its bitlength down individually until we reach the relative error threshold
-	for i, parameter in enumerate(trimmed_model.parameters()):
-		while not (trimmed_loss.item() > loss.item() and relative_error > args.max_loss_deviation):
-			# prepare the mask to trim the least significant N bits of the mantissas
-			mask = 0xFFFFFFFF
-			mask = mask >> optimal_bitlengths[i]
-			mask = mask << optimal_bitlengths[i]
-
-			# view the float value as if it was an int, to modify the bits specifically
-			weight_as_int = parameter.data.view(torch.int32) & mask
-
-			# reconvert to its trimmed float version
-			parameter.data = weight_as_int.data.view(torch.float)
-
-			optimal_bitlengths[i] = max(bitlength - 1, 0)
-
-			# compute output and loss of trimmed model
-			trimmed_output = trimmed_model(data)       
-			trimmed_loss = criterion(output, target)
-
-		# return the bitlength to the previous known working length
-		optimal_bitlengths[i] = min(bitlength + 1, args.init_bitlength)
+	print("Found bitlengths within relative loss error: " + str(optimal_bitlengths))
 	
-
-	return loss, trimmed_loss, output, trimmed_output, optimal_bitlengths
+	return optimal_bitlengths
 
 
 def run_netcrunch(train_loader, device, model, criterion, args):
@@ -117,12 +144,42 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 	for batch_idx, (data, target) in enumerate(train_loader):
 		data, target = data.to(device), target.to(device)
 
-		loss, trimmed_loss, output, trimmed_output, optimal_bitlengths = bruteforce_crunch(data, target, model, criterion, global_optimal_bitlengths, args)
+		batch_optimal_bitlengths = bruteforce_crunch(data, target, model, criterion, args)
 
-		prec1, prec5 = accuracy(trimmed_output.data, target.data, topk=(1, 5))
-		losses.update(trimmed_loss.item(), data.size(0))
-		top1.update(prec1.item(), data.size(0))
-		top5.update(prec5.item(), data.size(0))
+		# deepcopy the model to keep the original intact
+		trimmed_model = copy.deepcopy(model)
+
+		with torch.no_grad():
+			# prepare the final trimmed version for this batch and evaluate it on the batch
+			for i, parameter in enumerate(trimmed_model.parameters()):
+				# prepare the mask to trim the least significant N bits of the mantissas
+				mask = 0xFFFFFFFF
+				mask = mask >> batch_optimal_bitlengths[i]
+				mask = mask << batch_optimal_bitlengths[i]
+				# view the float value as if it was an int, to modify the bits specifically
+				weight_as_int = parameter.data.view(torch.int32) & mask
+
+				# reconvert to its trimmed float version
+				parameter.data = weight_as_int.data.view(torch.float)
+
+			# compute output and loss of trimmed model
+			trimmed_output = trimmed_model(data)       
+			trimmed_loss = criterion(trimmed_output, target)
+
+			prec1, prec5 = accuracy(trimmed_output.data, target.data, topk=(1, 5))
+			losses.update(trimmed_loss.item(), data.size(0))
+			top1.update(prec1.item(), data.size(0))
+			top5.update(prec5.item(), data.size(0))
+
+		# get rid of the trimmed model
+		del trimmed_model
+
+		# get the worst case scenario bitlength for every layer from previous batches
+		if global_optimal_bitlengths is None:
+			global_optimal_bitlengths = batch_optimal_bitlengths
+		else:
+			for i, bitlength in enumerate(global_optimal_bitlengths):
+				global_optimal_bitlengths[i] = max(bitlength, batch_optimal_bitlengths[i])
 
 		steptime = 0
 		steptime = progress_bar(batch_idx, len(train_loader), 'Loss: %2.4f | Top-1: %6.3f%% | Top-5: %6.3f%%' % (losses.avg, top1.avg, top5.avg))
@@ -152,7 +209,7 @@ def do_test(test_loader, device, model, criterion, args):
 
 def main():
 	# Training settings
-	parser = argparse.ArgumentParser(description='NetShed: Finding optimal inference bitlengths heuristically for neural networks')
+	parser = argparse.ArgumentParser(description='NetCrunch: Finding optimal inference bitlengths heuristically for neural networks')
 	parser.add_argument('--batch-size', type=int, default=128, metavar='N', help='input batch size for training (default: 128)')
 	parser.add_argument('--test-batch-size', type=int, default=128, metavar='N', help='input batch size for testing (default: 100)')
 	parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 200)')    
@@ -181,7 +238,6 @@ def main():
 	if args.pretrained_path is not None:
 		checkpoint = torch.load(args.pretrained_path)
 		model.load_state_dict(checkpoint['state_dict'])
-		optimizer.load_state_dict(checkpoint['optimizer'])
 		last_trained_epoch = checkpoint['epoch']
 		print("Training from epoch " + str(last_trained_epoch))
 	else:

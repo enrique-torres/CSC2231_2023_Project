@@ -9,10 +9,6 @@ from torch.optim.lr_scheduler import StepLR
 
 # Our imports
 from core.utils import *
-from core.actwgttracer import *
-from core.wgtupdatetracer import *
-from core.gradtracer import *
-from core.sparsitytracer import *
 
 g_arguments = None
 g_model = None
@@ -118,10 +114,6 @@ def train_test_loop(args, model, device, train_loader, val_loader, optimizer, cr
 		print("No criterion given to training process, exiting.")
 		exit(1)
 
-	if g_arguments.run_netshed:
-		g_netshed = None # TODO: Create NetShed object that is able to run on the model
-
-
 	last_trained_epoch = 0
 	if args.load_checkpoint is not None:
 		last_trained_epoch, g_model, g_optimizer = load_model_checkpoint(g_arguments, g_model, g_optimizer)
@@ -130,7 +122,7 @@ def train_test_loop(args, model, device, train_loader, val_loader, optimizer, cr
 	create_logging_folder(g_arguments.output_path)
 
 	for epoch in range(last_trained_epoch, g_arguments.epochs):
-		if g_arguments.save_checkpoint:
+		if g_arguments.save_checkpoint and epoch % args.save_checkpoint_freq == 0:
 			save_model_checkpoint(g_arguments, g_model, g_optimizer, epoch)
 			
 		if not g_arguments.onecycle and not g_arguments.cosine_lr:

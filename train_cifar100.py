@@ -35,7 +35,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 def main():
     # Training settings
-    parser = argparse.ArgumentParser(description='NetShed: Finding optimal inference bitlengths heuristically for neural networks')
+    parser = argparse.ArgumentParser(description='CIFAR100 Training with PyTorch')
     parser.add_argument('--batch-size', type=int, default=128, metavar='N', help='input batch size for training (default: 128)')
     parser.add_argument('--test-batch-size', type=int, default=128, metavar='N', help='input batch size for testing (default: 100)')
     parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 200)')    
@@ -47,14 +47,11 @@ def main():
     parser.add_argument('--device', type=str, default="0", help='The GPU to use (default: "0")')
 
     parser.add_argument('--load-checkpoint', type=str, default=None, help='Load checkpoint from given path (default: None)')
-    parser.add_argument('--save-checkpoint', action='store_true', default=False, help='Save checkpoints after training each epoch')
+    parser.add_argument('--save-checkpoint', action='store_true', default=True, help='Save checkpoints after training each epoch')
+    parser.add_argument('--save-checkpoint-freq', type=int, default=99, help='How many epochs must happen between each checkpoint save (default: 99)')    
 
     parser.add_argument('--onecycle', action='store_true', default=False, help='Trains with One Cycle LR scheduler')
     parser.add_argument('--cosine-lr', action='store_true', default=False, help='Trains with cosine LR updating')
-
-    parser.add_argument('--run-netshed', action='store_true', default=False, help='Runs BitShed on the network')
-
-
 
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
