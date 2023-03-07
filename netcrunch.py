@@ -23,45 +23,47 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # NEW IDEA: Test every layer individually to see what effect does trimming the specific layer have on the training loss
 # Then, based on layer size and effect on loss, decide what to trim more or less
 
-def compute_layer_contribution(data, target, original_model, criterion, args):
+# Calculate, for a given batch, how much each layer contributes to updating the 
+# weights/contributes to the loss of the entire network
+def compute_layer_contribution(data, target, original_model, criterion, optimizer, args):
 
 	# Set the model to evaluation mode
 	original_model.eval()
 
-	# Split the model into its constituent layers
-	layers = list(original_model.children())
+	# Forward pass
+	outputs = original_model(data)
+	loss = criterion(outputs, target)
 
-	# Compute the contribution of each layer to the loss
+	# Backward pass
+	optimizer.zero_grad()
+	loss.backward()
+
+	# Calculate the contribution of each layer to the loss value
 	layer_contributions = []
-	with torch.no_grad():
-		# Forward pass through the model
-		output = original_model(data)
+	for name, param in original_model.named_parameters():
+		if 'bias' not in name:
+			grad = param.grad.clone().detach()
+			param.backward(grad)
+			layer_contributions.append(grad.abs().mean().item())
+	
+	total_contribution = sum(layer_contributions)
+	for i, contribution in enumerate(layer_contributions):
+		layer_contributions[i] = contribution / total_contribution
 
-		# Compute the gradients of the loss with respect to the output of the model
-		loss_grads = torch.autograd.grad(criterion(output, target), output)[0]
+	return layer_contributions
 
-		# Compute the contribution of each layer to the loss
-		grads = None
-		for i in range(len(layers) - 1, -1, -1):
-			if grads is None:
-				# The gradient of the loss with respect to the output of the model is given by the loss_grads tensor
-				grads = loss_grads
-			else:
-				# Compute the gradient of the loss with respect to the input to the layer
-				grads = torch.autograd.grad(None, layers[i].weight, grads, retain_graph=True)[0]
-			contributions = layers[i].weight * grads
-			contributions = torch.mean(contributions.view(contributions.size(0), -1), dim=1)
-			layer_contributions.append(contributions)
+def calculate_perlayer_relative_size(original_model, args):
 
-def calculate_perlayer_parameters(original_model, args):
-
-	# Split the model into its constituent layers
-	layers = list(original_model.children())
-	# Compute the metric for each layer
 	perlayer_parameters = []
-	for i in range(len(layers)):
-		num_params = sum(p.numel() for p in layers[i].parameters())
-		perlayer_parameters.append(num_params)
+	# Split the model into its constituent layers
+	for name, param in original_model.named_parameters():
+		if 'bias' not in name:
+			num_params = sum(p.numel() for p in param)
+			perlayer_parameters.append(num_params)
+	
+	total_parameters = sum(perlayer_parameters)
+	for i, size in enumerate(perlayer_parameters):
+		perlayer_parameters[i] = size / float(total_parameters)
 
 	return perlayer_parameters
 
@@ -131,7 +133,7 @@ def bruteforce_crunch(data, target, original_model, criterion, args):
 	return optimal_bitlengths
 
 
-def run_netcrunch(train_loader, device, model, criterion, args):
+def run_netcrunch(train_loader, device, model, criterion, optimizer, args):
 
 	model.train()
 
@@ -143,6 +145,21 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 	global_optimal_bitlengths = None
 	for batch_idx, (data, target) in enumerate(train_loader):
 		data, target = data.to(device), target.to(device)
+
+		# evaluate per layer contribution to the loss
+		perlayer_contribution = compute_layer_contribution(data, target, model, criterion, optimizer, args)
+
+		# calculate how many parameters are there per layer
+		num_params_perlayer = calculate_perlayer_relative_size(model, args)
+
+		print(perlayer_contribution)
+		print(sum(perlayer_contribution))
+		print(len(perlayer_contribution))
+		print("#############################################################")
+		print(num_params_perlayer)
+		print(sum(num_params_perlayer))
+		print(len(num_params_perlayer))
+		exit(1)
 
 		batch_optimal_bitlengths = bruteforce_crunch(data, target, model, criterion, args)
 
@@ -275,7 +292,7 @@ def main():
 	args.output_path = "results/" + args.model + "_cifar100_" + timestr 
 
 	# run the core of NetCrunch on the train dataset
-	crunched_model = run_netcrunch(train_loader, device, model, criterion, args)
+	crunched_model = run_netcrunch(train_loader, device, model, criterion, optimizer, args)
 
 	# test the compressed model to see the effect on accuracy versus baseline
 	do_test(test_loader, device, crunched_model, criterion, args)
