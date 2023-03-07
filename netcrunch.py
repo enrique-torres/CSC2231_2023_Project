@@ -24,8 +24,8 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # Then, based on layer size and effect on loss, decide what to trim more or less
 
 # Calculate, for a given batch, how much each layer contributes to updating the 
-# weights/contributes to the loss of the entire network
-def compute_layer_contribution(data, target, original_model, criterion, optimizer, args):
+# weights/contributes to the updating of the entire network
+def compute_layer_contribution_gradient_based(data, target, original_model, criterion, optimizer, args):
 
 	# Set the model to evaluation mode
 	original_model.eval()
@@ -45,12 +45,68 @@ def compute_layer_contribution(data, target, original_model, criterion, optimize
 			grad = param.grad.clone().detach()
 			param.backward(grad)
 			layer_contributions.append(grad.abs().mean().item())
-	
-	total_contribution = sum(layer_contributions)
-	for i, contribution in enumerate(layer_contributions):
-		layer_contributions[i] = contribution / total_contribution
 
 	return layer_contributions
+
+# Calculate, for a given batch, how much does trimming mantissa bits degrade
+# the performance of the network (loss) for the batch
+def compute_layer_contribution_degradation_based(data, target, original_model, criterion, optimizer, args):
+
+	# Set the model to evaluation mode
+	original_model.eval()
+
+	# Forward pass
+	outputs = original_model(data)
+	loss = criterion(outputs, target)
+
+	# For every layer, we are going to drop its mantissa bitlength from initial bitlength to 0
+	# and we will test what is the variance in the outputs/activations of the layer against the original model, 
+	# as well as how much the loss degrades in general
+	perlayer_outputs_degradation = []
+	perlayer_loss_degradation = []
+	for i in len(original_model.named_parameters()):
+
+		perlayer_outputs_degradation.append([])
+		perlayer_loss_degradation.append([])
+
+		# deepcopy the model to have a modifiable version
+		trimmed_model = copy.deepcopy(original_model)
+		trimmed_model.eval()
+
+		# for every bitlength going down from initial bilength, trim the layer mantissa bitlength 1 by 1
+		for bitlength in range(args.init_bitlength, 0, -1):
+			for j, (name, param) in enumerate(original_model.named_parameters()):
+				if j == i and 'bias' not in name:
+					# prepare the mask to trim the least significant N bits of the mantissas
+					mask = 0xFFFFFFFF
+					mask = mask >> (args.init_bitlength - bitlength)
+					mask = mask << (args.init_bitlength - bitlength)
+
+					# view the float value as if it was an int, to modify the bits specifically
+					weight_as_int = param.data.view(torch.int32) & mask
+
+					# reconvert to its trimmed float version
+					param.data = weight_as_int.data.view(torch.float32)
+
+			# compute output and loss of trimmed model
+			trimmed_output = trimmed_model(data)       
+			trimmed_loss = criterion(trimmed_output, target)
+
+			# calculate outputs average differential
+			outputs_differential = outputs - trimmed_output
+			outputs_differential_mean = outputs_differential.mean().item()
+			perlayer_outputs_degradation[i].append(outputs_differential_mean)
+
+			# calculate loss degradation
+			loss_degradation = loss.item() - trimmed_loss.item()
+			perlayer_loss_degradation[i].append(loss_degradation)
+
+		# delete the trimmed model from GPU memory because we will have to recopy it for every layer
+		del trimmed_model
+		
+	# return the mean outputs differential per layer per bitlength, as well as the loss degradation per layer per bitlength
+	return perlayer_outputs_degradation, perlayer_loss_degradation
+
 
 def calculate_perlayer_relative_size(original_model, args):
 
