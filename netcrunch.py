@@ -5,6 +5,7 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 import copy
+import numpy as np
 
 from core.utils import *
 
@@ -74,7 +75,8 @@ def bruteforce_crunch(data, target, original_model, criterion, args):
 	print("Found bitlengths within relative loss error: " + str(optimal_bitlengths))
 	
 	return optimal_bitlengths
-		
+
+
 def run_netcrunch(train_loader, device, model, criterion, args):
 
 	losses  = AverageMeter()
