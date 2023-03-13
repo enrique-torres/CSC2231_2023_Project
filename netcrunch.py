@@ -6,8 +6,10 @@ import torch.utils.data
 import torch.utils.data.distributed
 import copy
 import numpy as np
+import time
 
 from core.utils import *
+from netcrunch_sa import simulated_annealing_netcrunch
 
 # NEW IDEA: Test every layer individually to see what effect does trimming the specific layer have on the training loss
 # Then, based on layer size and effect on loss, decide what to trim more or less
@@ -18,7 +20,10 @@ from core.utils import *
 def bruteforce_crunch(data, target, original_model, criterion, args):
 	
 	# create initial list of mantissa bitlengths for the trimmed network
-	optimal_bitlengths = [args.init_bitlength] * len(list(original_model.parameters()))
+	optimal_bitlengths = []
+	for name, param in original_model.named_parameters():
+		if 'bias' not in name:
+			optimal_bitlengths.append(args.init_bitlength)
 	
 	with torch.no_grad():
 		# compute output of original model
@@ -41,17 +46,20 @@ def bruteforce_crunch(data, target, original_model, criterion, args):
 		# we don't want torch autograd to know about this :)
 		with torch.no_grad():
 			# for every parameter, take its currently defined mantissa bitlength
-			for i, parameter in enumerate(trimmed_model.parameters()):
-				# prepare the mask to trim the least significant N bits of the mantissas
-				mask = 0xFFFFFFFF
-				mask = mask >> (args.init_bitlength - optimal_bitlengths[i])
-				mask = mask << (args.init_bitlength - optimal_bitlengths[i])
+			i = 0
+			for name, parameter in trimmed_model.named_parameters():
+				if 'bias' not in name:
+					# prepare the mask to trim the least significant N bits of the mantissas
+					mask = 0xFFFFFFFF
+					mask = mask >> (args.init_bitlength - optimal_bitlengths[i])
+					mask = mask << (args.init_bitlength - optimal_bitlengths[i])
 
-				# view the float value as if it was an int, to modify the bits specifically
-				weight_as_int = parameter.data.view(torch.int32) & mask
+					# view the float value as if it was an int, to modify the bits specifically
+					weight_as_int = parameter.data.view(torch.int32) & mask
 
-				# reconvert to its trimmed float version
-				parameter.data = weight_as_int.data.view(torch.float32)
+					# reconvert to its trimmed float version
+					parameter.data = weight_as_int.data.view(torch.float32)
+					i += 1
 
 			# push all the bitlengths down
 			for i, bitlength in enumerate(optimal_bitlengths):
@@ -87,27 +95,35 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 	# Set the model to evaluation mode
 	model.eval()
 
-	global_optimal_bitlengths = None
+	average_optimal_bitlengths = None
+	total_num_batches = 0
+	start_time = time.time()
 	for batch_idx, (data, target) in enumerate(train_loader):
 		data, target = data.to(device), target.to(device)
 
+		print("Finding a general bitlength for all layers")
 		batch_optimal_bitlengths = bruteforce_crunch(data, target, model, criterion, args)
+		print("Performing simulated annealing algorithm to find better solution")
+		batch_optimal_bitlengths = simulated_annealing_netcrunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, args)
 
 		# deepcopy the model to keep the original intact
 		trimmed_model = copy.deepcopy(model)
 
 		with torch.no_grad():
 			# prepare the final trimmed version for this batch and evaluate it on the batch
-			for i, parameter in enumerate(trimmed_model.parameters()):
-				# prepare the mask to trim the least significant N bits of the mantissas
-				mask = 0xFFFFFFFF
-				mask = mask >> batch_optimal_bitlengths[i]
-				mask = mask << batch_optimal_bitlengths[i]
-				# view the float value as if it was an int, to modify the bits specifically
-				weight_as_int = parameter.data.view(torch.int32) & mask
+			i = 0
+			for name, parameter in trimmed_model.named_parameters():
+				if 'bias' not in name:
+					# prepare the mask to trim the least significant N bits of the mantissas
+					mask = 0xFFFFFFFF
+					mask = mask >> batch_optimal_bitlengths[i]
+					mask = mask << batch_optimal_bitlengths[i]
+					# view the float value as if it was an int, to modify the bits specifically
+					weight_as_int = parameter.data.view(torch.int32) & mask
 
-				# reconvert to its trimmed float version
-				parameter.data = weight_as_int.data.view(torch.float)
+					# reconvert to its trimmed float version
+					parameter.data = weight_as_int.data.view(torch.float)
+					i += 1
 
 			# compute output and loss of trimmed model
 			trimmed_output = trimmed_model(data)       
@@ -122,12 +138,45 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 		del trimmed_model
 
 		# get the worst case scenario bitlength for every layer from previous batches
-		if global_optimal_bitlengths is None:
-			global_optimal_bitlengths = batch_optimal_bitlengths
+		if average_optimal_bitlengths is None:
+			average_optimal_bitlengths = batch_optimal_bitlengths
 		else:
-			for i, bitlength in enumerate(global_optimal_bitlengths):
-				global_optimal_bitlengths[i] = max(bitlength, batch_optimal_bitlengths[i])
+			for i, bitlength in enumerate(average_optimal_bitlengths):
+				average_optimal_bitlengths[i] = bitlength + batch_optimal_bitlengths[i]
+
+		total_num_batches += 1
 
 		steptime = 0
 		steptime = progress_bar(batch_idx, len(train_loader), 'Loss: %2.4f | Top-1: %6.3f%% | Top-5: %6.3f%%' % (losses.avg, top1.avg, top5.avg))
 		stime.update(steptime, 1)
+
+	for i, bitlength in enumerate(average_optimal_bitlengths):
+		average_optimal_bitlengths[i] = round((average_optimal_bitlengths[i] / float(total_num_batches)) + 0.5)
+
+	end_time = time.time()
+	total_time = end_time - start_time
+	time_string = " seconds"
+	if total_time > 60:
+		total_time = total_time / 60.0
+		time_string = " minutes"
+	print("Done! It took " + str(total_time) + time_string)
+	print("Optimal bitlengths found: " + str(average_optimal_bitlengths))
+
+	# deepcopy the model to keep the original intact
+	trimmed_model = copy.deepcopy(model)
+	# prepare the final trimmed version for this batch and evaluate it on the batch
+	i = 0
+	for name, parameter in trimmed_model.named_parameters():
+		if 'bias' not in name:
+			# prepare the mask to trim the least significant N bits of the mantissas
+			mask = 0xFFFFFFFF
+			mask = mask >> average_optimal_bitlengths[i]
+			mask = mask << average_optimal_bitlengths[i]
+			# view the float value as if it was an int, to modify the bits specifically
+			weight_as_int = parameter.data.view(torch.int32) & mask
+
+			# reconvert to its trimmed float version
+			parameter.data = weight_as_int.data.view(torch.float)
+			i += 1
+
+	return trimmed_model

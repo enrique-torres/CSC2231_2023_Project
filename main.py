@@ -39,6 +39,7 @@ def do_test(test_loader, device, model, criterion, args):
 			top5.update(prec5.item(), data.size(0))
 
 			progress_bar(batch_idx, len(test_loader), 'Loss: %2.4f | Top-1: %6.3f%% | Top-5: %6.3f%% ' % (losses.avg, top1.avg, top5.avg))
+	return top1.avg, top5.avg
 
 def main():
 	parser = argparse.ArgumentParser(description='NetCrunch: Finding optimal inference bitlengths heuristically for neural networks')
@@ -109,7 +110,14 @@ def main():
 	crunched_model = run_netcrunch(train_loader, device, model, criterion, args)
 
 	# test the compressed model to see the effect on accuracy versus baseline
-	do_test(test_loader, device, crunched_model, criterion, args)
+	top1_original, top5_original = do_test(test_loader, device, model, criterion, args)
+	top1_crunched, top5_crunched = do_test(test_loader, device, crunched_model, criterion, args)
+
+	# print out the results
+	print("The original model achieved a Top-1 accuracy of " + str(top1_original) + ", while the trimmed model achieved " + str(top1_crunched))
+	print("The original model achieved a Top-5 accuracy of " + str(top5_original) + ", while the trimmed model achieved " + str(top5_crunched))
+
+	
 
 if __name__ == '__main__':
 	main()

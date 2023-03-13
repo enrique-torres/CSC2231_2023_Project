@@ -38,6 +38,10 @@ def exponential_scheduling(k=1, lam=0.1, limit=100):
 
 def calculate_solution_cost(perlayer_weighted_size_distribution, solution_bitlengths, loss_relative_error):
 	total_cost = 0
+	print(perlayer_weighted_size_distribution)
+	print(solution_bitlengths)
+	print(len(perlayer_weighted_size_distribution))
+	print(len(solution_bitlengths))
 	for i, bitlength in enumerate(solution_bitlengths):
 		layer_cost = bitlength * perlayer_weighted_size_distribution[i]
 		total_cost += layer_cost
@@ -49,17 +53,20 @@ def evaluate_solution_loss(original_model, data, target, criterion, bitlengths):
 	# deepcopy the model to have a modifiable version
 	trimmed_model = copy.deepcopy(original_model)
 
-	for i, parameter in enumerate(trimmed_model.parameters()):
-		# prepare the mask to trim the least significant N bits of the mantissas
-		mask = 0xFFFFFFFF
-		mask = mask >> bitlengths[i]
-		mask = mask << bitlengths[i]
+	i = 0
+	for name, parameter in trimmed_model.named_parameters():
+		if 'bias' not in name:
+			# prepare the mask to trim the least significant N bits of the mantissas
+			mask = 0xFFFFFFFF
+			mask = mask >> bitlengths[i]
+			mask = mask << bitlengths[i]
 
-		# view the float value as if it was an int, to modify the bits specifically
-		weight_as_int = parameter.data.view(torch.int32) & mask
+			# view the float value as if it was an int, to modify the bits specifically
+			weight_as_int = parameter.data.view(torch.int32) & mask
 
-		# reconvert to its trimmed float version
-		parameter.data = weight_as_int.data.view(torch.float)
+			# reconvert to its trimmed float version
+			parameter.data = weight_as_int.data.view(torch.float)
+			i += 1
 
 	with torch.no_grad():
 		# compute output and loss of trimmed model
