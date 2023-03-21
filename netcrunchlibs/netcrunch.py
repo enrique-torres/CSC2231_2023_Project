@@ -148,4 +148,4 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 		total_time = total_time / 60.0
 		time_string = " minutes"
 
-	return total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths
+	return total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths, perlayer_relative_size
