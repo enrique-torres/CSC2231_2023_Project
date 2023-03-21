@@ -15,9 +15,29 @@ from core.modelzoo import load_untrained_model
 from core.utils import *
 from core.train import *
 
-from netcrunch import run_netcrunch
+from netcrunchlibs.netcrunch import run_netcrunch
 
 ssl._create_default_https_context = ssl._create_unverified_context
+
+def prepare_trimmed_model(original_model, bitlengths, args):
+	with torch.no_grad():
+		# deepcopy the model to keep the original intact
+		trimmed_model = copy.deepcopy(original_model)
+		# prepare the final trimmed version for this batch and evaluate it on the batch
+		i = 0
+		for name, parameter in trimmed_model.named_parameters():
+			if 'bias' not in name:
+				# prepare the mask to trim the least significant N bits of the mantissas
+				mask = 0xFFFFFFFF
+				mask = mask >> (args.init_bitlength - bitlengths[i])
+				mask = mask << (args.init_bitlength - bitlengths[i])
+				# view the float value as if it was an int, to modify the bits specifically
+				weight_as_int = parameter.data.view(torch.int32) & mask
+
+				# reconvert to its trimmed float version
+				parameter.data = weight_as_int.data.view(torch.float)
+				i += 1
+	return trimmed_model
 
 def do_test(test_loader, device, model, criterion, args):
 
@@ -53,6 +73,7 @@ def main():
 	parser.add_argument('--device', type=str, default="0", help='The GPU to use (default: "0")')
 
 	parser.add_argument('--run-netcrunch', action='store_true', default=False, help='Runs NetCrunch on the network')
+	parser.add_argument('--netcrunch-alg', type=str, default="sa", help='The algorithm that NetCrunch will run: [sa, ga, greedy_bf]')
 	parser.add_argument('--pretrained-path', type=str, default=None, help='The path to the model pretrained on CIFAR100')
 	parser.add_argument('--max-loss-deviation', type=float, default=0.1, help='Maximum accepted percentage deviation of the trimmed training loss versus the original loss')
 	parser.add_argument('--init-bitlength', type=int, default=23, help='Initial mantissa bitlength. Set based on datatype of pretrained network (default: 23 for FP32)') 
@@ -107,17 +128,44 @@ def main():
 	args.output_path = "results/" + args.model + "_cifar100_" + timestr 
 
 	# run the core of NetCrunch on the train dataset
-	crunched_model = run_netcrunch(train_loader, device, model, criterion, args)
+	total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths = run_netcrunch(train_loader, device, model, criterion, args)
 
 	# test the compressed model to see the effect on accuracy versus baseline
 	top1_original, top5_original = do_test(test_loader, device, model, criterion, args)
-	top1_crunched, top5_crunched = do_test(test_loader, device, crunched_model, criterion, args)
+	# test with average bitlengths
+	trimmed_model_average = prepare_trimmed_model(model, average_optimal_bitlengths, args)
+	top1_crunched_avg, top5_crunched_avg = do_test(test_loader, device, trimmed_model_average, criterion, args)
+	del trimmed_model_average
+	# test with min bitlengths
+	trimmed_model_min = prepare_trimmed_model(model, min_bitlengths, args)
+	top1_crunched_min, top5_crunched_min = do_test(test_loader, device, trimmed_model_min, criterion, args)
+	del trimmed_model_min
+	# test with max bitlengths
+	trimmed_model_max = prepare_trimmed_model(model, max_bitlengths, args)
+	top1_crunched_max, top5_crunched_max = do_test(test_loader, device, trimmed_model_max, criterion, args)
+	del trimmed_model_max
+	# test with minmax bitlengths
+	trimmed_model_minmax = prepare_trimmed_model(model, minmax_bitlengths, args)
+	top1_crunched_minmax, top5_crunched_minmax = do_test(test_loader, device, trimmed_model_minmax, criterion, args)
+	del trimmed_model_minmax
+
+	# select the better one
+	mixing_algorithms = ["average", "min", "max", "min-max"]
+	mixing_algorithms_results = [top1_crunched_avg, top1_crunched_min, top1_crunched_max, top1_crunched_minmax]
+	mixing_algorithms_bitlengths = [average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths]
+	max_accuracy = max(mixing_algorithms_results)
+	max_accuracy_index = mixing_algorithms_results.index(max_accuracy)
+	best_mixing_algorithm = mixing_algorithms[max_accuracy_index]
+
 
 	# print out the results
-	print("The original model achieved a Top-1 accuracy of " + str(top1_original) + ", while the trimmed model achieved " + str(top1_crunched))
-	print("The original model achieved a Top-5 accuracy of " + str(top5_original) + ", while the trimmed model achieved " + str(top5_crunched))
-
-	
+	print("The original model achieved a Top-1 accuracy of " + str(top1_original) + " and Top-5 of " + str(top5_original))
+	print("The average trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_avg) + " and Top-5 of " + str(top5_crunched_avg) + " with bitlengths: " + str(average_optimal_bitlengths))
+	print("The min trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_min) + " and Top-5 of " + str(top5_crunched_min) + " with bitlengths: " + str(min_bitlengths))
+	print("The max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_max) + " and Top-5 of " + str(top5_crunched_max) + " with bitlengths: " + str(max_bitlengths))
+	print("The min-max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_minmax) + " and Top-5 of " + str(top5_crunched_minmax) + " with bitlengths: " + str(minmax_bitlengths))
+	print("Done! It took " + str(total_time) + time_string)
+	#print("Optimal bitlengths found: " + str(mixing_algorithms_bitlengths[max_accuracy_index]) + " with mixing algorithm " + best_mixing_algorithm)
 
 if __name__ == '__main__':
 	main()

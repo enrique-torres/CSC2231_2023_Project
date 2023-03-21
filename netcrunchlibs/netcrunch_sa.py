@@ -10,20 +10,14 @@ import random
 
 from core.utils import *
 
-def calculate_perlayer_relative_size(original_model):
-
-	perlayer_parameters_weighted = []
-	# Split the model into its constituent layers
-	for name, param in original_model.named_parameters():
-		if 'bias' not in name:
-			num_params = sum(p.numel() for p in param)
-			perlayer_parameters_weighted.append(num_params)
-	
-	total_parameters = sum(perlayer_parameters_weighted)
-	for i, size in enumerate(perlayer_parameters_weighted):
-		perlayer_parameters_weighted[i] = size / float(total_parameters)
-
-	return perlayer_parameters_weighted
+def bitlength_weighted_neighbour_function(bitlengths, max_bitlength, perlayer_parameters_weighted):
+	new_bitlengths = []
+	for i, bitlength in enumerate(bitlengths):
+		list_of_candidates = [max(0, bitlength - 1), bitlength, min(max_bitlength, bitlength + 1)]
+		probability_of_candidates = [(1.0 - perlayer_parameters_weighted[i]) / 2.0, (1.0 - perlayer_parameters_weighted[i]) / 2.0, perlayer_parameters_weighted[i]]
+		new_bitlength = np.random.choice(list_of_candidates, 1, p=probability_of_candidates).item()
+		new_bitlengths.append(new_bitlength)
+	return new_bitlengths
 
 def bitlength_neighbour_function(bitlengths, max_bitlength):
 	new_bitlengths = []
@@ -36,19 +30,18 @@ def exponential_scheduling(k=1, lam=0.1, limit=100):
 	function = lambda t: (k * np.exp(-lam*t) if t < limit else 0)
 	return function
 
-def calculate_solution_cost(perlayer_weighted_size_distribution, solution_bitlengths, loss_relative_error):
+def calculate_solution_cost(perlayer_weighted_size_distribution, solution_bitlengths, loss_relative_error, args):
 	total_cost = 0
-	print(perlayer_weighted_size_distribution)
-	print(solution_bitlengths)
-	print(len(perlayer_weighted_size_distribution))
-	print(len(solution_bitlengths))
 	for i, bitlength in enumerate(solution_bitlengths):
-		layer_cost = bitlength * perlayer_weighted_size_distribution[i]
+		layer_cost = (bitlength ** 2) * perlayer_weighted_size_distribution[i]
 		total_cost += layer_cost
-	total_cost = total_cost * loss_relative_error
+	if loss_relative_error > args.max_loss_deviation:
+		total_cost = float("inf")#total_cost * 2.0 # we don't want to deviate too much because it will affect accuracy, so we penalize it
+	else:
+		total_cost = total_cost * (loss_relative_error)
 	return total_cost
 
-def evaluate_solution_loss(original_model, data, target, criterion, bitlengths):
+def evaluate_solution_loss(original_model, data, target, criterion, bitlengths, args):
 	
 	# deepcopy the model to have a modifiable version
 	trimmed_model = copy.deepcopy(original_model)
@@ -58,8 +51,8 @@ def evaluate_solution_loss(original_model, data, target, criterion, bitlengths):
 		if 'bias' not in name:
 			# prepare the mask to trim the least significant N bits of the mantissas
 			mask = 0xFFFFFFFF
-			mask = mask >> bitlengths[i]
-			mask = mask << bitlengths[i]
+			mask = mask >> (args.init_bitlength - bitlengths[i])
+			mask = mask << (args.init_bitlength - bitlengths[i])
 
 			# view the float value as if it was an int, to modify the bits specifically
 			weight_as_int = parameter.data.view(torch.int32) & mask
@@ -80,15 +73,12 @@ def evaluate_solution_loss(original_model, data, target, criterion, bitlengths):
 	return trimmed_loss
 
 
-def simulated_annealing_netcrunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, args):
+def simulated_annealing_netcrunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
 	
 	# simulated annealing hyperparameters
-	num_iterations = 30
+	num_iterations = 10
 	k = 1
 	lam = 0.1
-
-	# calculate the weighted size distribution of each layer to calculate solution cost
-	perlayer_weighted_size_distribution = calculate_perlayer_relative_size(original_model)
 	
 	with torch.no_grad():
 		# compute output of original model
@@ -96,13 +86,13 @@ def simulated_annealing_netcrunch(data, target, original_model, criterion, start
 		loss = criterion(output, target)
 
 	# evaluate initial solution (all bitlengths set to a minimum within a relative loss error)
-	trimmed_loss = evaluate_solution_loss(original_model, data, target, criterion, starter_bitlengths)
+	trimmed_loss = evaluate_solution_loss(original_model, data, target, criterion, starter_bitlengths, args)
 
 	# relative error between the original loss and the trimmed loss
 	relative_error = abs(trimmed_loss.item() - loss.item()) / loss.item()
 
 	# calculate the cost of the starter solution
-	cost_starter_solution = calculate_solution_cost(perlayer_weighted_size_distribution, starter_bitlengths, relative_error)
+	cost_starter_solution = calculate_solution_cost(perlayer_weighted_size_distribution, starter_bitlengths, relative_error, args)
 
 	# start SA algorithm
 	current_solution = starter_bitlengths
@@ -113,12 +103,13 @@ def simulated_annealing_netcrunch(data, target, original_model, criterion, start
 		T = exponential_scheduling(k, lam, num_iterations)(iter)
 		# calculate the new neighbour
 		next_solution = bitlength_neighbour_function(current_solution, args.init_bitlength)
+		#next_solution = bitlength_weighted_neighbour_function(current_solution, args.init_bitlength, perlayer_weighted_size_distribution)
 		# evaluate the solution and get the loss
-		trimmed_loss = evaluate_solution_loss(original_model, data, target, criterion, next_solution)
+		trimmed_loss = evaluate_solution_loss(original_model, data, target, criterion, next_solution, args)
 		# relative error between the original loss and the trimmed loss
 		relative_error = abs(trimmed_loss.item() - loss.item()) / loss.item()
 		# calculate the cost of the trimmed solution
-		cost_new_solution = calculate_solution_cost(perlayer_weighted_size_distribution, next_solution, relative_error)
+		cost_new_solution = calculate_solution_cost(perlayer_weighted_size_distribution, next_solution, relative_error, args)
 		# calculate the error delta between original solution and new solution
 		delta_error = cost_new_solution - cost_starter_solution
 		# check if delta error is better and stochastically decide about new solution
