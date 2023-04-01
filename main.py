@@ -15,7 +15,7 @@ from core.modelzoo import load_untrained_model
 from core.utils import *
 from core.train import *
 
-from netcrunchlibs.netcrunch import run_netcrunch
+from braincrunchlibs.braincrunch import run_braincrunch
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -61,26 +61,7 @@ def do_test(test_loader, device, model, criterion, args):
 			progress_bar(batch_idx, len(test_loader), 'Loss: %2.4f | Top-1: %6.3f%% | Top-5: %6.3f%% ' % (losses.avg, top1.avg, top5.avg))
 	return top1.avg, top5.avg
 
-def main():
-	parser = argparse.ArgumentParser(description='NetCrunch: Finding optimal inference bitlengths heuristically for neural networks')
-	parser.add_argument('--batch-size', type=int, default=128, metavar='N', help='input batch size for training (default: 128)')
-	parser.add_argument('--test-batch-size', type=int, default=128, metavar='N', help='input batch size for testing (default: 100)')
-	parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 200)')    
-	parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')    
-	parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
-	parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 0.1)')
-	parser.add_argument('--model', type=str, default="resnet18", help='Model name to run training on (default: resnet18)')
-	parser.add_argument('--device', type=str, default="0", help='The GPU to use (default: "0")')
-
-	parser.add_argument('--run-netcrunch', action='store_true', default=False, help='Runs NetCrunch on the network')
-	parser.add_argument('--netcrunch-alg', type=str, default="sa", help='The algorithm that NetCrunch will run: [sa, ga, greedy_bf]')
-	parser.add_argument('--pretrained-path', type=str, default=None, help='The path to the model pretrained on CIFAR100')
-	parser.add_argument('--max-loss-deviation', type=float, default=0.1, help='Maximum accepted percentage deviation of the trimmed training loss versus the original loss')
-	parser.add_argument('--init-bitlength', type=int, default=23, help='Initial mantissa bitlength. Set based on datatype of pretrained network (default: 23 for FP32)')
-	parser.add_argument('--init-exp-bitlength', type=int, default=8, help='Initial exponent bitlength. Set based on datatype of pretrained network (default: 8 for FP32)')
-
-
-	args = parser.parse_args()
+def run_experiment(args):
 	use_cuda = not args.no_cuda and torch.cuda.is_available()
 
 	torch.manual_seed(args.seed)
@@ -96,7 +77,7 @@ def main():
 		last_trained_epoch = checkpoint['epoch']
 		print("Training from epoch " + str(last_trained_epoch))
 	else:
-		print("Pretrained model is required for NetCrunch to work!")
+		print("Pretrained model is required for BrainCrunch to work!")
 		exit(1)
 	model = model.to(device)
 
@@ -126,10 +107,12 @@ def main():
 	criterion = nn.CrossEntropyLoss()
 	
 	timestr = time.strftime("%Y%m%d_%H%M%S")
-	args.output_path = "results/" + args.model + "_cifar100_" + timestr 
+	args.output_path = "results/" + args.model + "_cifar100_" + timestr + "_" + args.braincrunch_alg + ".txt"
 
-	# run the core of NetCrunch on the train dataset
-	total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths, perlayer_relative_size = run_netcrunch(train_loader, device, model, criterion, args)
+	# run the core of BrainCrunch on the train dataset
+	total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths, perlayer_relative_size, exponent_bitlengths = run_braincrunch(train_loader, device, model, criterion, args)
+	print("DEBUG EXPONENT BITLENGTHS #################################################################")
+	print(exponent_bitlengths)
 
 	# test the compressed model to see the effect on accuracy versus baseline
 	top1_original, top5_original = do_test(test_loader, device, model, criterion, args)
@@ -158,27 +141,69 @@ def main():
 	footprint_minmax_method = 0.0
 	for i, layer_size in enumerate(perlayer_relative_size):
 		footprint_baseline += (args.init_bitlength + args.init_exp_bitlength + 1.0) * layer_size # 1.0 for sign bit
-		footprint_average_method += (average_optimal_bitlengths[i] + args.init_exp_bitlength + 1.0) * layer_size
-		footprint_min_method += (min_bitlengths[i] + args.init_exp_bitlength + 1.0) * layer_size
-		footprint_max_method += (max_bitlengths[i] + args.init_exp_bitlength + 1.0) * layer_size
-		footprint_minmax_method += (minmax_bitlengths[i] + args.init_exp_bitlength + 1.0) * layer_size
+		footprint_average_method += (average_optimal_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
+		footprint_min_method += (min_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
+		footprint_max_method += (max_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
+		footprint_minmax_method += (minmax_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
 	footprint_average_method = (footprint_average_method / footprint_baseline) * 100
 	footprint_min_method = (footprint_min_method / footprint_baseline) * 100
 	footprint_max_method = (footprint_max_method / footprint_baseline) * 100
 	footprint_minmax_method = (footprint_minmax_method / footprint_baseline) * 100
 
+	with open(args.output_path, "w") as output_file:
+		output_file.write("The original model achieved a Top-1 accuracy of " + str(top1_original) + " and Top-5 of " + str(top5_original) + "\n")
+		output_file.write("The average trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_avg) + " and Top-5 of " + str(top5_crunched_avg) + " with footprint vs baseline of: " + str(footprint_average_method) + "%\n")
+		output_file.write("Mantissa bitlengths for average method: " + str(average_optimal_bitlengths) + "\n")
+		output_file.write("The min trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_min) + " and Top-5 of " + str(top5_crunched_min) + " with footprint vs baseline of: " + str(footprint_min_method) + "%\n")
+		output_file.write("Mantissa bitlengths for min method: " + str(min_bitlengths) + "\n")
+		output_file.write("The max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_max) + " and Top-5 of " + str(top5_crunched_max) + " with footprint vs baseline of: " + str(footprint_max_method) + "%\n")
+		output_file.write("Mantissa bitlengths for max method: " + str(max_bitlengths) + "\n")
+		output_file.write("The min-max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_minmax) + " and Top-5 of " + str(top5_crunched_minmax) + " with footprint vs baseline of: " + str(footprint_minmax_method) + "%\n")
+		output_file.write("Mantissa bitlengths for min-max method: " + str(minmax_bitlengths) + "\n")
+		output_file.write("Exponent bitlengths: " + str(exponent_bitlengths) + "\n")
+		output_file.write("Done! It took " + str(total_time) + time_string + "\n")
+
 	# print out the results
-	print("The original model achieved a Top-1 accuracy of " + str(top1_original) + " and Top-5 of " + str(top5_original))
-	print("The average trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_avg) + " and Top-5 of " + str(top5_crunched_avg) + " with footprint vs baseline of: " + str(footprint_average_method) + "%")
-	print("Bitlengths for average method: " + str(average_optimal_bitlengths))
-	print("The min trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_min) + " and Top-5 of " + str(top5_crunched_min) + " with footprint vs baseline of: " + str(footprint_min_method) + "%")
-	print("Bitlengths for min method: " + str(min_bitlengths))
-	print("The max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_max) + " and Top-5 of " + str(top5_crunched_max) + " with footprint vs baseline of: " + str(footprint_max_method) + "%")
-	print("Bitlengths for max method: " + str(max_bitlengths))
-	print("The min-max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_minmax) + " and Top-5 of " + str(top5_crunched_minmax) + " with footprint vs baseline of: " + str(footprint_minmax_method) + "%")
-	print("Bitlengths for min-max method: " + str(minmax_bitlengths))
-	print("Done! It took " + str(total_time) + time_string)
+	#print("The original model achieved a Top-1 accuracy of " + str(top1_original) + " and Top-5 of " + str(top5_original))
+	#print("The average trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_avg) + " and Top-5 of " + str(top5_crunched_avg) + " with footprint vs baseline of: " + str(footprint_average_method) + "%")
+	#print("Bitlengths for average method: " + str(average_optimal_bitlengths))
+	#print("The min trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_min) + " and Top-5 of " + str(top5_crunched_min) + " with footprint vs baseline of: " + str(footprint_min_method) + "%")
+	#print("Bitlengths for min method: " + str(min_bitlengths))
+	#print("The max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_max) + " and Top-5 of " + str(top5_crunched_max) + " with footprint vs baseline of: " + str(footprint_max_method) + "%")
+	#print("Bitlengths for max method: " + str(max_bitlengths))
+	#print("The min-max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_minmax) + " and Top-5 of " + str(top5_crunched_minmax) + " with footprint vs baseline of: " + str(footprint_minmax_method) + "%")
+	#print("Bitlengths for min-max method: " + str(minmax_bitlengths))
+	#print("Done! It took " + str(total_time) + time_string)
 	#print("Optimal bitlengths found: " + str(mixing_algorithms_bitlengths[max_accuracy_index]) + " with mixing algorithm " + best_mixing_algorithm)
+
+
+def main():
+	parser = argparse.ArgumentParser(description='BrainCrunch: Finding optimal inference bitlengths heuristically for neural networks')
+	parser.add_argument('--batch-size', type=int, default=128, metavar='N', help='input batch size for training (default: 128)')
+	parser.add_argument('--test-batch-size', type=int, default=128, metavar='N', help='input batch size for testing (default: 100)')
+	parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 200)')    
+	parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')    
+	parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
+	parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 0.1)')
+	parser.add_argument('--model', type=str, default="resnet18", help='Model name to run training on (default: resnet18)')
+	parser.add_argument('--device', type=str, default="0", help='The GPU to use (default: "0")')
+
+	parser.add_argument('--run-braincrunch', action='store_true', default=False, help='Runs BrainCrunch on the network')
+	parser.add_argument('--braincrunch-alg', type=str, default="sa", help='The algorithm that BrainCrunch will run: [sa, ga, greedy_bf, all]')
+	parser.add_argument('--pretrained-path', type=str, default=None, help='The path to the model pretrained on CIFAR100')
+	parser.add_argument('--max-loss-deviation', type=float, default=0.1, help='Maximum accepted percentage deviation of the trimmed training loss versus the original loss')
+	parser.add_argument('--init-bitlength', type=int, default=23, help='Initial mantissa bitlength. Set based on datatype of pretrained network (default: 23 for FP32)')
+	parser.add_argument('--init-exp-bitlength', type=int, default=8, help='Initial exponent bitlength. Set based on datatype of pretrained network (default: 8 for FP32)')
+
+
+	args = parser.parse_args()
+	if args.braincrunch_alg == "all":
+		for algorithm in ["sa", "ga", "greedy_bf", "all"]:
+			args.braincrunch_alg = algorithm
+			run_experiment(args)
+	else:
+		run_experiment(args)
+	
 
 if __name__ == '__main__':
 	main()

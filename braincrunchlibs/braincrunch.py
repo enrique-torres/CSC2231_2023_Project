@@ -7,12 +7,32 @@ import torch.utils.data.distributed
 import copy
 import numpy as np
 import time
+import math
 
 from core.utils import *
-from netcrunchlibs.netcrunch_bruteforce import bruteforce_crunch
-from netcrunchlibs.netcrunch_sa import simulated_annealing_netcrunch
-from netcrunchlibs.netcrunch_ga import genetic_algorithm_netcrunch
-from netcrunchlibs.netcrunch_greedy_bf import greedy_bf_netcrunch
+from braincrunchlibs.braincrunch_bruteforce import bruteforce_crunch
+from braincrunchlibs.braincrunch_sa import simulated_annealing_crunch
+from braincrunchlibs.braincrunch_ga import genetic_algorithm_crunch
+from braincrunchlibs.braincrunch_greedy_bf import greedy_bf_crunch
+
+def compress_exponents(model):
+	perlayer_exponent_bitlength = []
+	# Split the model into its constituent layers
+	for name, param in model.named_parameters():
+		if 'bias' not in name:
+			# view the float value as if it was an int, to modify the bits specifically
+			mask = 0x7F800000
+			weight_as_int = param.data.view(torch.int32) & mask # mask out all bits except for exponents
+			param_exponents = torch.bitwise_right_shift(weight_as_int.clone(), 23) # leave only the exponent bits as their integer values
+			min_exp_value = torch.min(param_exponents) # find the minimum value
+			param_exponents_constrained = param_exponents - min_exp_value.expand_as(param_exponents) # subtract the minimum value from all exponents to constrain their size
+			median_exp_value = torch.median(param_exponents_constrained) # find the median value to use it as the center point for delta calculations
+			param_exponents_deltas = param_exponents_constrained - median_exp_value.expand_as(param_exponents_constrained) # calculate deltas from each value to median
+			param_exponents_deltas = param_exponents_deltas + torch.abs(torch.min(param_exponents_deltas)).expand_as(param_exponents_deltas)
+			mean_delta = torch.mean(param_exponents_deltas.float()) # calculate the mean of all deltas to approximate the stored exponent bitlengths of the tensor
+			perlayer_exponent_bitlength.append(math.ceil(mean_delta.item()).bit_length())
+
+	return perlayer_exponent_bitlength
 
 def calculate_perlayer_relative_size(original_model):
 
@@ -29,7 +49,7 @@ def calculate_perlayer_relative_size(original_model):
 
 	return perlayer_parameters_weighted
 
-def run_netcrunch(train_loader, device, model, criterion, args):
+def run_braincrunch(train_loader, device, model, criterion, args):
 
 	losses  = AverageMeter()
 	top1    = AverageMeter()
@@ -56,15 +76,15 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 		print("Finding a general bitlength for all layers")
 		batch_optimal_bitlengths = bruteforce_crunch(data, target, model, criterion, args)
 
-		if args.netcrunch_alg == "sa":
+		if args.braincrunch_alg == "sa":
 			print("Performing Simulated Annealing algorithm to find better solution")
-			batch_optimal_bitlengths = simulated_annealing_netcrunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, perlayer_relative_size, args)
-		elif args.netcrunch_alg == "ga":
+			batch_optimal_bitlengths = simulated_annealing_crunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, perlayer_relative_size, args)
+		elif args.braincrunch_alg == "ga":
 			print("Performing Genetic Algorithm to find better solution")
-			batch_optimal_bitlengths = genetic_algorithm_netcrunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, perlayer_relative_size, args)
-		elif args.netcrunch_alg == "greedy_bf":
+			batch_optimal_bitlengths = genetic_algorithm_crunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, perlayer_relative_size, args)
+		elif args.braincrunch_alg == "greedy_bf":
 			print("Performing Greedy Biggest-First algorithm to find better solution")
-			batch_optimal_bitlengths = greedy_bf_netcrunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, perlayer_relative_size, args)
+			batch_optimal_bitlengths = greedy_bf_crunch(data, target, model, criterion, batch_optimal_bitlengths, batch_idx, perlayer_relative_size, args)
 		else:
 			print("Unrecognized algorithm. Available algorithms: sa, ga, greedy_bf. Exiting.")
 			exit(1)
@@ -148,4 +168,4 @@ def run_netcrunch(train_loader, device, model, criterion, args):
 		total_time = total_time / 60.0
 		time_string = " minutes"
 
-	return total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths, perlayer_relative_size
+	return total_time, time_string, average_optimal_bitlengths, min_bitlengths, max_bitlengths, minmax_bitlengths, perlayer_relative_size, compress_exponents(model)

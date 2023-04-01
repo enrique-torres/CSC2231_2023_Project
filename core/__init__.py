@@ -1,1 +1,1 @@
-__all__ = ["traincore", "utils"]
+__all__ = ["core", "utils"]

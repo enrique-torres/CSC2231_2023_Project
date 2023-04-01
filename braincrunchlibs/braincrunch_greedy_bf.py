@@ -41,14 +41,15 @@ def evaluate_solution_loss(original_model, data, target, criterion, bitlengths, 
 	# return the trimmed loss item
 	return trimmed_loss
 
-def greedy_bf_netcrunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
+# greedy biggest footprint layer first at every step of the algorithm
+def greedy_bf_crunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
 
 	# first compute output and loss of original model
 	with torch.no_grad():
 		output = original_model(data)       
 		loss = criterion(output, target)
 	# set current solution to starter bitlengths
-	current_solution = starter_bitlengths
+	current_solution = [args.init_bitlength for _ in starter_bitlengths]
 	# calculate how much each layer is contributing to the total footprint of the model
 	current_solution_perlayer_contribution = [(bitlength + args.init_exp_bitlength + 1.0) * layer_weight for bitlength, layer_weight in zip(current_solution, perlayer_weighted_size_distribution)]
 	# create a boolean list that will tell the algorithm whether a specific layer cannot be trimmed more or it will cause the loss to deteriorate too much
@@ -60,7 +61,9 @@ def greedy_bf_netcrunch(data, target, original_model, criterion, starter_bitleng
 		# find the layer that currently contributes more towards footprint and that is not saturated
 		largest_layer_index = current_solution_perlayer_contribution.index(max(current_solution_perlayer_contribution))
 		# decrease the bitlength by one
-		current_solution[largest_layer_index] = max(0, current_solution[largest_layer_index] - 1)
+		current_solution[largest_layer_index] = max(0, current_solution[largest_layer_index] - 2)
+		if current_solution[largest_layer_index] == 0:
+			current_solution_perlayer_saturated[largest_layer_index] = True
 		# evaluate the loss of the solution and calculate relative error to full precision model
 		solution_loss = evaluate_solution_loss(original_model, data, target, criterion, current_solution, args)
 		relative_error = abs(solution_loss.item() - loss.item()) / loss.item()

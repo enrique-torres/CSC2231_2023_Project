@@ -108,12 +108,12 @@ def evaluate_population_losses(original_model, data, target, criterion, populati
 		population_losses.append(sol_loss)
 	return population_losses
 
-def genetic_algorithm_netcrunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
+def genetic_algorithm_crunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
 	
 	# simulated annealing hyperparameters
-	num_iterations = 10
-	num_population = 8
-	num_parents = 4
+	num_iterations = 20
+	num_population = 4
+	num_parents = 2
 	mutation_probability = 0.6
 	crossover_probability = 0.7
 	
