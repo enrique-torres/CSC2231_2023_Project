@@ -112,8 +112,8 @@ def genetic_algorithm_crunch(data, target, original_model, criterion, starter_bi
 	
 	# simulated annealing hyperparameters
 	num_iterations = 20
-	num_population = 4
-	num_parents = 2
+	num_population = 8
+	num_parents = 4
 	mutation_probability = 0.6
 	crossover_probability = 0.7
 	

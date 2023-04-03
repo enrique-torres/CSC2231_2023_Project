@@ -10,6 +10,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import time
 import ssl
+import csv
 
 from core.modelzoo import load_untrained_model
 from core.utils import *
@@ -139,29 +140,81 @@ def run_experiment(args):
 	footprint_min_method = 0.0
 	footprint_max_method = 0.0
 	footprint_minmax_method = 0.0
+	# calculate footprint of mantissas
+	footprint_baseline_mantissas = 0.0
+	footprint_average_method_mantissas = 0.0
+	footprint_min_method_mantissas = 0.0
+	footprint_max_method_mantissas = 0.0
+	footprint_minmax_method_mantissas = 0.0
+	# calculate footprint of exponents
+	footprint_baseline_exponents = 0.0
+	footprint_average_method_exponents = 0.0
+	footprint_min_method_exponents = 0.0
+	footprint_max_method_exponents = 0.0
+	footprint_minmax_method_exponents = 0.0
+	# calculate footprint of sign
+	footprint_baseline_sign = 0.0
+	footprint_average_method_sign = 0.0
+	footprint_min_method_sign = 0.0
+	footprint_max_method_sign = 0.0
+	footprint_minmax_method_sign = 0.0
+
 	for i, layer_size in enumerate(perlayer_relative_size):
+		# general footprint
 		footprint_baseline += (args.init_bitlength + args.init_exp_bitlength + 1.0) * layer_size # 1.0 for sign bit
 		footprint_average_method += (average_optimal_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
 		footprint_min_method += (min_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
 		footprint_max_method += (max_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
 		footprint_minmax_method += (minmax_bitlengths[i] + exponent_bitlengths[i] + 1.0) * layer_size
-	footprint_average_method = (footprint_average_method / footprint_baseline) * 100
-	footprint_min_method = (footprint_min_method / footprint_baseline) * 100
-	footprint_max_method = (footprint_max_method / footprint_baseline) * 100
-	footprint_minmax_method = (footprint_minmax_method / footprint_baseline) * 100
+		# mantissas footprint contribution
+		footprint_baseline_mantissas += (args.init_bitlength) * layer_size # 1.0 for sign bit
+		footprint_average_method_mantissas += (average_optimal_bitlengths[i]) * layer_size
+		footprint_min_method_mantissas += (min_bitlengths[i]) * layer_size
+		footprint_max_method_mantissas += (max_bitlengths[i]) * layer_size
+		footprint_minmax_method_mantissas += (minmax_bitlengths[i]) * layer_size
+		# exponents footprint contribution
+		footprint_baseline_exponents += (args.init_exp_bitlength) * layer_size # 1.0 for sign bit
+		footprint_average_method_exponents += (exponent_bitlengths[i]) * layer_size
+		footprint_min_method_exponents += (exponent_bitlengths[i]) * layer_size
+		footprint_max_method_exponents += (exponent_bitlengths[i]) * layer_size
+		footprint_minmax_method_exponents += (exponent_bitlengths[i]) * layer_size
+		# sign footprint contribution
+		footprint_baseline_sign += (1.0) * layer_size # 1.0 for sign bit
+		footprint_average_method_sign += (1.0) * layer_size
+		footprint_min_method_sign += (1.0) * layer_size
+		footprint_max_method_sign += (1.0) * layer_size
+		footprint_minmax_method_sign += (1.0) * layer_size
 
-	with open(args.output_path, "w") as output_file:
-		output_file.write("The original model achieved a Top-1 accuracy of " + str(top1_original) + " and Top-5 of " + str(top5_original) + "\n")
-		output_file.write("The average trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_avg) + " and Top-5 of " + str(top5_crunched_avg) + " with footprint vs baseline of: " + str(footprint_average_method) + "%\n")
-		output_file.write("Mantissa bitlengths for average method: " + str(average_optimal_bitlengths) + "\n")
-		output_file.write("The min trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_min) + " and Top-5 of " + str(top5_crunched_min) + " with footprint vs baseline of: " + str(footprint_min_method) + "%\n")
-		output_file.write("Mantissa bitlengths for min method: " + str(min_bitlengths) + "\n")
-		output_file.write("The max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_max) + " and Top-5 of " + str(top5_crunched_max) + " with footprint vs baseline of: " + str(footprint_max_method) + "%\n")
-		output_file.write("Mantissa bitlengths for max method: " + str(max_bitlengths) + "\n")
-		output_file.write("The min-max trimmed model achieved a Top-1 accuracy of " + str(top1_crunched_minmax) + " and Top-5 of " + str(top5_crunched_minmax) + " with footprint vs baseline of: " + str(footprint_minmax_method) + "%\n")
-		output_file.write("Mantissa bitlengths for min-max method: " + str(minmax_bitlengths) + "\n")
-		output_file.write("Exponent bitlengths: " + str(exponent_bitlengths) + "\n")
-		output_file.write("Done! It took " + str(total_time) + time_string + "\n")
+	# total footprint versus baseline
+	footprint_average_method = (footprint_average_method / footprint_baseline)
+	footprint_min_method = (footprint_min_method / footprint_baseline)
+	footprint_max_method = (footprint_max_method / footprint_baseline)
+	footprint_minmax_method = (footprint_minmax_method / footprint_baseline)
+	# mantissas footprint versus baseline
+	footprint_average_method_mantissas = (footprint_average_method_mantissas / footprint_baseline_mantissas)
+	footprint_min_method_mantissas = (footprint_min_method_mantissas / footprint_baseline_mantissas)
+	footprint_max_method_mantissas = (footprint_max_method_mantissas / footprint_baseline_mantissas)
+	footprint_minmax_method_mantissas = (footprint_minmax_method_mantissas / footprint_baseline_mantissas)
+	# exponents footprint versus baseline
+	footprint_average_method_exponents = (footprint_average_method_exponents / footprint_baseline_exponents)
+	footprint_min_method_exponents = (footprint_min_method_exponents / footprint_baseline_exponents)
+	footprint_max_method_exponents = (footprint_max_method_exponents / footprint_baseline_exponents)
+	footprint_minmax_method_exponents = (footprint_minmax_method_exponents / footprint_baseline_exponents)
+	# sign footprint versus baseline
+	footprint_average_method_sign = (footprint_average_method_sign / footprint_baseline_sign)
+	footprint_min_method_sign = (footprint_min_method_sign / footprint_baseline_sign)
+	footprint_max_method_sign = (footprint_max_method_sign / footprint_baseline_sign)
+	footprint_minmax_method_sign = (footprint_minmax_method_sign / footprint_baseline_sign)
+
+
+	with open(args.output_path, mode='w', newline='', encoding='utf-8') as csvfile:
+		csvwriter = csv.writer(csvfile, delimiter=',')
+		csvwriter.writerow(["mixing_algorithm", "top1", "top5", "total_footprint", "mantissas_footprint", "exponents_footprint", "sign_footprint", "time"])
+		csvwriter.writerow(["baseline", top1_original, top5_original, 1, 0.71875, 0.25, 0.03125])
+		csvwriter.writerow(["average", top1_crunched_avg, top5_crunched_avg, footprint_average_method, footprint_average_method_mantissas, footprint_average_method_exponents, footprint_average_method_sign, str(total_time) + time_string])
+		csvwriter.writerow(["min", top1_crunched_min, top5_crunched_min, footprint_min_method, footprint_min_method_mantissas, footprint_min_method_exponents, footprint_min_method_sign, str(total_time) + time_string])
+		csvwriter.writerow(["max", top1_crunched_max, top5_crunched_max, footprint_max_method, footprint_max_method_mantissas, footprint_max_method_exponents, footprint_max_method_sign, str(total_time) + time_string])
+		csvwriter.writerow(["minmax", top1_crunched_minmax, top5_crunched_minmax, footprint_minmax_method, footprint_minmax_method_mantissas, footprint_minmax_method_exponents, footprint_minmax_method_sign, str(total_time) + time_string])
 
 	# print out the results
 	#print("The original model achieved a Top-1 accuracy of " + str(top1_original) + " and Top-5 of " + str(top5_original))
@@ -198,7 +251,7 @@ def main():
 
 	args = parser.parse_args()
 	if args.braincrunch_alg == "all":
-		for algorithm in ["sa", "ga", "greedy_bf", "all"]:
+		for algorithm in ["sa", "ga", "greedy_bf"]:
 			args.braincrunch_alg = algorithm
 			run_experiment(args)
 	else:
