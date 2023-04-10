@@ -76,8 +76,8 @@ def evaluate_solution_loss(original_model, data, target, criterion, bitlengths, 
 def simulated_annealing_crunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
 	
 	# simulated annealing hyperparameters
-	num_iterations = 10
-	k = 1
+	num_iterations = 50
+	k = 20
 	lam = 0.1
 	
 	with torch.no_grad():

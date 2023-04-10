@@ -111,11 +111,11 @@ def evaluate_population_losses(original_model, data, target, criterion, populati
 def genetic_algorithm_crunch(data, target, original_model, criterion, starter_bitlengths, batch_idx, perlayer_weighted_size_distribution, args):
 	
 	# simulated annealing hyperparameters
-	num_iterations = 20
+	num_iterations = 50 # test: 10, 20, 50
 	num_population = 8
 	num_parents = 4
-	mutation_probability = 0.6
-	crossover_probability = 0.7
+	mutation_probability = 0.6 # test: 0.2, 0.6
+	crossover_probability = 0.6 # test: 0.2, 0.6
 	
 	with torch.no_grad():
 		# compute output of original model
